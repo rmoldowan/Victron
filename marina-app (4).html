@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Harbor Master — Marina Slip Manager</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Source+Code+Pro:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --navy: #0d1b2a; --deep: #071018; --water: #1a3a5c; --water-light: #1e4d78;
+    --brass: #c9a84c; --brass-light: #e8c96d; --brass-dim: #8a6e2e;
+    --dock: #4a3728; --dock-light: #6b4f38; --foam: #e8f4f8; --muted: #8faab8;
+    --occupied: #c0392b; --occupied-light: #e74c3c;
+    --available: #1a6b3a; --available-light: #27ae60;
+    --reserved: #7d5a00; --reserved-light: #d4a017;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--deep); color:var(--foam); font-family:'Source Code Pro',monospace; min-height:100vh; overflow-x:hidden; }
+  body::before {
+    content:''; position:fixed; inset:0; pointer-events:none; z-index:0;
+    background: repeating-linear-gradient(90deg,transparent,transparent 60px,rgba(26,58,92,.15) 60px,rgba(26,58,92,.15) 61px),
+                repeating-linear-gradient(0deg,transparent,transparent 40px,rgba(26,58,92,.1) 40px,rgba(26,58,92,.1) 41px);
+    animation:waterShift 20s ease-in-out infinite;
+  }
+  @keyframes waterShift{0%,100%{transform:translateX(0) translateY(0);opacity:.6}50%{transform:translateX(5px) translateY(3px);opacity:1}}
+
+  /* LOADING SCREEN */
+  #loading-screen {
+    position:fixed; inset:0; background:var(--deep); z-index:200;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px;
+    transition:opacity .4s ease;
+  }
+  #loading-screen.fade-out { opacity:0; pointer-events:none; }
+  .loading-anchor { font-size:48px; animation:bob 1.5s ease-in-out infinite; }
+  .loading-text { font-family:'Playfair Display',serif; font-size:22px; color:var(--brass-light); letter-spacing:4px; text-transform:uppercase; }
+  .loading-sub { font-size:10px; color:var(--muted); letter-spacing:3px; text-transform:uppercase; }
+  .loading-bar { width:200px; height:2px; background:rgba(255,255,255,.08); border-radius:2px; overflow:hidden; }
+  .loading-bar-fill { height:100%; background:var(--brass); border-radius:2px; animation:loadFill 1.4s ease-in-out forwards; }
+  @keyframes loadFill{from{width:0}to{width:100%}}
+  @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+
+  /* SYNC INDICATOR */
+  .sync-pill {
+    display:flex; align-items:center; gap:7px; padding:5px 12px;
+    border:1px solid rgba(255,255,255,.1); border-radius:20px; font-size:9px;
+    letter-spacing:2px; text-transform:uppercase; color:var(--muted);
+    transition:all .3s;
+  }
+  .sync-dot { width:7px; height:7px; border-radius:50%; background:var(--muted); transition:background .3s; }
+  .sync-pill.live .sync-dot { background:var(--available-light); animation:pulse 2s ease-in-out infinite; }
+  .sync-pill.live { color:var(--available-light); border-color:rgba(39,174,96,.3); }
+  .sync-pill.saving .sync-dot { background:var(--brass); animation:none; }
+  .sync-pill.saving { color:var(--brass); border-color:rgba(201,168,76,.3); }
+  .sync-pill.error .sync-dot { background:var(--occupied-light); animation:none; }
+  .sync-pill.error { color:var(--occupied-light); border-color:rgba(231,76,60,.3); }
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+  header {
+    position:relative; z-index:10; border-bottom:2px solid var(--brass-dim);
+    background:linear-gradient(180deg,rgba(7,16,24,.98),rgba(13,27,42,.95));
+    padding:14px 28px; display:flex; align-items:center; justify-content:space-between;
+    box-shadow:0 4px 30px rgba(0,0,0,.5);
+  }
+  .logo { display:flex; align-items:baseline; gap:12px; }
+  .logo-icon { font-size:24px; animation:bob 3s ease-in-out infinite; }
+  .logo h1 { font-family:'Playfair Display',serif; font-size:22px; font-weight:900; color:var(--brass-light); letter-spacing:3px; text-transform:uppercase; }
+  .logo p { font-size:9px; color:var(--muted); letter-spacing:4px; text-transform:uppercase; }
+  .header-right { display:flex; align-items:center; gap:20px; }
+  .header-stats { display:flex; gap:24px; }
+  .stat { text-align:center; }
+  .stat-val { font-family:'Playfair Display',serif; font-size:24px; font-weight:700; line-height:1; }
+  .stat-val.available{color:var(--available-light)} .stat-val.occupied{color:var(--occupied-light)} .stat-val.total{color:var(--brass-light)}
+  .stat-label { font-size:9px; letter-spacing:3px; text-transform:uppercase; color:var(--muted); margin-top:3px; }
+  .btn-editor { padding:8px 16px; background:transparent; border:1px solid var(--brass-dim); color:var(--brass); font-family:'Source Code Pro',monospace; font-size:9px; letter-spacing:3px; text-transform:uppercase; cursor:pointer; border-radius:3px; transition:all .2s; }
+  .btn-editor:hover{border-color:var(--brass-light);color:var(--brass-light);background:rgba(201,168,76,.08)}
+
+  .main { position:relative; z-index:5; display:grid; grid-template-columns:1fr 340px; height:calc(100vh - 73px); }
+  .marina-view { padding:22px 26px; overflow-y:auto; border-right:2px solid var(--brass-dim); }
+  .marina-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; }
+  .marina-title { font-family:'Playfair Display',serif; font-size:13px; color:var(--brass); letter-spacing:4px; text-transform:uppercase; }
+  .legend { display:flex; gap:16px; align-items:center; }
+  .legend-item { display:flex; align-items:center; gap:6px; font-size:9px; letter-spacing:2px; color:var(--muted); text-transform:uppercase; }
+  .legend-dot { width:10px; height:10px; border-radius:2px; }
+  .legend-dot.available{background:var(--available-light)} .legend-dot.occupied{background:var(--occupied-light)} .legend-dot.reserved{background:var(--reserved-light)}
+
+  .dock-section { margin-bottom:26px; }
+  .dock-label { font-size:11px; letter-spacing:5px; color:var(--brass-dim); text-transform:uppercase; margin-bottom:8px; display:flex; align-items:center; gap:10px; }
+  .dock-label::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--brass-dim),transparent)}
+  .dock-walkway { background:var(--dock); border:1px solid var(--dock-light); border-radius:4px; padding:12px; display:flex; gap:8px; flex-wrap:wrap; position:relative; }
+  .dock-walkway::before { content:''; position:absolute; top:0; bottom:0; left:0; width:4px; background:repeating-linear-gradient(180deg,var(--dock-light) 0,var(--dock-light) 8px,transparent 8px,transparent 14px); border-radius:4px 0 0 4px; }
+  .dock-walkway.layout-vertical { flex-direction:column; flex-wrap:nowrap; width:fit-content; padding:12px 12px 12px 20px; }
+  .dock-walkway.layout-vertical .slip { width:220px; height:60px; flex-direction:row; justify-content:flex-start; padding:0 14px; gap:12px; }
+  .dock-walkway.layout-grid { display:grid; grid-template-columns:repeat(var(--gcols,5),80px); gap:8px; }
+  .dock-walkway.layout-grid::before{display:none}
+  .dock-walkway.layout-finger { display:flex; gap:8px; flex-wrap:wrap; padding:12px 12px 12px 20px; }
+
+  .slip { width:80px; height:110px; border-radius:4px; border:2px solid transparent; cursor:pointer; position:relative; transition:all .2s; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; overflow:hidden; }
+  .slip::before{content:'';position:absolute;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 8px,rgba(255,255,255,.03) 8px,rgba(255,255,255,.03) 9px)}
+  .slip.available{background:linear-gradient(160deg,rgba(26,107,58,.3),rgba(26,107,58,.15));border-color:var(--available)}
+  .slip.available:hover{background:linear-gradient(160deg,rgba(39,174,96,.4),rgba(26,107,58,.25));border-color:var(--available-light);transform:scale(1.05);box-shadow:0 0 20px rgba(39,174,96,.3)}
+  .slip.occupied{background:linear-gradient(160deg,rgba(192,57,43,.35),rgba(192,57,43,.2));border-color:var(--occupied)}
+  .slip.occupied:hover{border-color:var(--occupied-light);transform:scale(1.05);box-shadow:0 0 20px rgba(231,76,60,.3)}
+  .slip.reserved{background:linear-gradient(160deg,rgba(125,90,0,.35),rgba(125,90,0,.2));border-color:var(--reserved)}
+  .slip.reserved:hover{border-color:var(--reserved-light);transform:scale(1.05);box-shadow:0 0 20px rgba(212,160,23,.3)}
+  .slip.selected{outline:2px solid var(--brass-light);outline-offset:2px}
+  .slip-num{font-family:'Playfair Display',serif;font-size:18px;font-weight:700;color:var(--foam)}
+  .slip-size{font-size:9px;letter-spacing:2px;color:var(--muted);text-transform:uppercase}
+  .slip-icon{font-size:22px;opacity:.8}
+  .slip-name{font-size:8px;color:var(--brass-light);text-align:center;padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;letter-spacing:1px}
+
+  .water-channel{height:22px;background:linear-gradient(180deg,var(--water),var(--water-light) 50%,var(--water));margin:6px 0;border-radius:3px;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  .water-channel::after{content:'〜 〜 〜 〜 〜 〜 〜 〜 〜 〜 〜 〜 〜';font-size:10px;color:rgba(255,255,255,.2);letter-spacing:4px;animation:wave 4s linear infinite}
+  @keyframes wave{from{letter-spacing:4px}50%{letter-spacing:6px}to{letter-spacing:4px}}
+
+  .side-panel{background:rgba(7,16,24,.9);display:flex;flex-direction:column;overflow:hidden}
+  .panel-tabs{display:flex;border-bottom:2px solid var(--brass-dim)}
+  .tab{flex:1;padding:13px;text-align:center;font-size:9px;letter-spacing:3px;text-transform:uppercase;color:var(--muted);cursor:pointer;border:none;background:transparent;transition:all .2s;border-bottom:2px solid transparent;margin-bottom:-2px}
+  .tab.active{color:var(--brass-light);border-bottom-color:var(--brass-light)}
+  .tab:hover:not(.active){color:var(--foam)}
+  .panel-content{flex:1;overflow-y:auto;padding:20px}
+  .panel-content::-webkit-scrollbar{width:4px}
+  .panel-content::-webkit-scrollbar-thumb{background:var(--brass-dim);border-radius:2px}
+  .slip-detail,.roster-list{display:none}
+  .slip-detail.active,.roster-list.active{display:block}
+
+  .detail-header{text-align:center;margin-bottom:20px;padding-bottom:18px;border-bottom:1px solid rgba(201,168,76,.3)}
+  .detail-slip-num{font-family:'Playfair Display',serif;font-size:52px;font-weight:900;color:var(--brass-light);line-height:1}
+  .detail-dock{font-size:10px;letter-spacing:4px;color:var(--muted);text-transform:uppercase;margin-top:4px}
+  .detail-status-badge{display:inline-block;padding:4px 16px;border-radius:20px;font-size:9px;letter-spacing:3px;text-transform:uppercase;margin-top:10px}
+  .detail-status-badge.available{background:rgba(39,174,96,.2);color:var(--available-light);border:1px solid var(--available)}
+  .detail-status-badge.occupied{background:rgba(231,76,60,.2);color:var(--occupied-light);border:1px solid var(--occupied)}
+  .detail-status-badge.reserved{background:rgba(212,160,23,.2);color:var(--reserved-light);border:1px solid var(--reserved)}
+
+  .field-group{margin-bottom:14px}
+  .field-label{font-size:9px;letter-spacing:3px;color:var(--brass-dim);text-transform:uppercase;margin-bottom:6px}
+  .field-value{font-size:13px;color:var(--foam);padding:8px 12px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:4px}
+  input.field-value,select.field-value{width:100%;outline:none;transition:border-color .2s;font-family:'Source Code Pro',monospace}
+  input.field-value:focus,select.field-value:focus{border-color:var(--brass);background:rgba(201,168,76,.05)}
+  select.field-value option{background:var(--deep);color:var(--foam)}
+
+  .btn{width:100%;padding:11px;border:none;border-radius:4px;font-family:'Source Code Pro',monospace;font-size:10px;letter-spacing:3px;text-transform:uppercase;cursor:pointer;transition:all .2s;margin-bottom:8px}
+  .btn-primary{background:var(--brass);color:var(--deep);font-weight:600}
+  .btn-primary:hover{background:var(--brass-light);transform:translateY(-1px);box-shadow:0 4px 16px rgba(201,168,76,.3)}
+  .btn-danger{background:transparent;border:1px solid var(--occupied);color:var(--occupied-light)}
+  .btn-danger:hover{background:rgba(231,76,60,.1)}
+  .btn-ghost{background:transparent;border:1px solid rgba(255,255,255,.12);color:var(--muted)}
+  .btn-ghost:hover{border-color:var(--muted);color:var(--foam)}
+
+  .no-selection{text-align:center;padding:40px 20px;color:var(--muted)}
+  .no-selection-icon{font-size:48px;margin-bottom:16px;opacity:.4}
+  .no-selection p{font-size:11px;letter-spacing:2px;line-height:1.8}
+
+  .roster-item{padding:12px;border:1px solid rgba(255,255,255,.06);border-radius:4px;margin-bottom:8px;cursor:pointer;transition:all .2s;display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center}
+  .roster-item:hover{border-color:var(--brass-dim);background:rgba(201,168,76,.05)}
+  .roster-slip-badge{font-family:'Playfair Display',serif;font-size:18px;font-weight:700;color:var(--brass-light);min-width:36px;text-align:center}
+  .roster-info{overflow:hidden}
+  .roster-vessel{font-size:12px;color:var(--foam);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .roster-owner{font-size:10px;color:var(--muted);margin-top:2px}
+  .roster-status-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .roster-status-dot.occupied{background:var(--occupied-light)} .roster-status-dot.reserved{background:var(--reserved-light)}
+
+  /* MODAL */
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.78);backdrop-filter:blur(4px);z-index:100;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .25s}
+  .modal-overlay.open{opacity:1;pointer-events:all}
+  .modal{background:var(--navy);border:1px solid var(--brass-dim);border-radius:6px;width:680px;max-width:95vw;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 24px 80px rgba(0,0,0,.7);transform:translateY(20px);transition:transform .25s}
+  .modal-overlay.open .modal{transform:translateY(0)}
+  .modal-header{padding:20px 24px 16px;border-bottom:1px solid var(--brass-dim);display:flex;align-items:center;justify-content:space-between}
+  .modal-title{font-family:'Playfair Display',serif;font-size:20px;color:var(--brass-light);letter-spacing:2px}
+  .modal-subtitle{font-size:10px;color:var(--muted);letter-spacing:3px;text-transform:uppercase;margin-top:3px}
+  .modal-close{background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;padding:4px 8px;transition:color .2s}
+  .modal-close:hover{color:var(--foam)}
+  .modal-body{flex:1;overflow-y:auto;padding:24px}
+  .modal-body::-webkit-scrollbar{width:4px}
+  .modal-body::-webkit-scrollbar-thumb{background:var(--brass-dim);border-radius:2px}
+  .modal-footer{padding:16px 24px;border-top:1px solid rgba(255,255,255,.08);display:flex;gap:10px;justify-content:flex-end}
+  .modal-footer .btn{width:auto;padding:10px 24px;margin:0}
+
+  .section-title{font-size:10px;letter-spacing:4px;text-transform:uppercase;color:var(--brass-dim);margin-bottom:14px;display:flex;align-items:center;gap:10px}
+  .section-title::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--brass-dim),transparent)}
+  .divider{height:1px;background:rgba(255,255,255,.06);margin:20px 0}
+
+  .layout-picker{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:20px}
+  .layout-option{padding:14px 8px;background:rgba(255,255,255,.03);border:2px solid rgba(255,255,255,.08);border-radius:5px;cursor:pointer;text-align:center;transition:all .2s}
+  .layout-option:hover{border-color:var(--brass-dim)}
+  .layout-option.selected{border-color:var(--brass);background:rgba(201,168,76,.08)}
+  .layout-option-icon{font-size:22px;margin-bottom:7px}
+  .layout-option-name{font-size:9px;letter-spacing:3px;text-transform:uppercase;color:var(--muted)}
+  .layout-option.selected .layout-option-name{color:var(--brass-light)}
+
+  .dock-row{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:5px;padding:14px 14px 14px 10px;margin-bottom:10px;display:grid;grid-template-columns:24px 1fr 80px 140px auto;gap:10px;align-items:center;transition:border-color .2s}
+  .dock-row:hover{border-color:rgba(255,255,255,.14)}
+  .dock-row.drag-over{border-color:var(--brass);background:rgba(201,168,76,.07)}
+  .dock-row .field-group{margin:0}
+  .drag-handle{cursor:grab;color:var(--brass-dim);font-size:18px;text-align:center;user-select:none;line-height:1}
+  .drag-handle:active{cursor:grabbing}
+  .remove-dock{background:none;border:none;color:var(--occupied);font-size:16px;cursor:pointer;padding:4px 8px;transition:color .2s;border-radius:3px}
+  .remove-dock:hover{color:var(--occupied-light);background:rgba(231,76,60,.1)}
+  .add-dock-btn{width:100%;padding:11px;background:transparent;border:1px dashed var(--brass-dim);color:var(--brass-dim);font-family:'Source Code Pro',monospace;font-size:10px;letter-spacing:3px;text-transform:uppercase;cursor:pointer;border-radius:4px;transition:all .2s;margin-top:4px}
+  .add-dock-btn:hover{border-color:var(--brass);color:var(--brass);background:rgba(201,168,76,.05)}
+
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--brass);color:var(--deep);padding:10px 24px;border-radius:4px;font-size:11px;letter-spacing:2px;text-transform:uppercase;font-weight:600;z-index:1000;transition:transform .3s ease}
+  .toast.show{transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+
+<!-- Loading screen -->
+<div id="loading-screen">
+  <div class="loading-anchor">⚓</div>
+  <div class="loading-text">Harbor Master</div>
+  <div class="loading-sub">Syncing marina data...</div>
+  <div class="loading-bar"><div class="loading-bar-fill"></div></div>
+</div>
+
+<header>
+  <div class="logo">
+    <span class="logo-icon">⚓</span>
+    <div><h1>Harbor Master</h1><p>Marina Slip Management System</p></div>
+  </div>
+  <div class="header-right">
+    <div class="header-stats">
+      <div class="stat"><div class="stat-val total" id="stat-total">—</div><div class="stat-label">Total Slips</div></div>
+      <div class="stat"><div class="stat-val available" id="stat-available">—</div><div class="stat-label">Available</div></div>
+      <div class="stat"><div class="stat-val occupied" id="stat-occupied">—</div><div class="stat-label">Occupied</div></div>
+    </div>
+    <div class="sync-pill" id="sync-pill"><div class="sync-dot"></div><span id="sync-label">Connecting...</span></div>
+    <button class="btn-editor" onclick="openEditor()">⚙ Edit Layout</button>
+  </div>
+</header>
+
+<div class="main">
+  <div class="marina-view">
+    <div class="marina-header">
+      <div class="marina-title">⛵ Dock Overview</div>
+      <div class="legend">
+        <div class="legend-item"><div class="legend-dot available"></div>Available</div>
+        <div class="legend-item"><div class="legend-dot occupied"></div>Occupied</div>
+        <div class="legend-item"><div class="legend-dot reserved"></div>Reserved</div>
+      </div>
+    </div>
+    <div id="marina-grid"></div>
+  </div>
+
+  <div class="side-panel">
+    <div class="panel-tabs">
+      <button class="tab active" onclick="switchTab('detail')">Slip Detail</button>
+      <button class="tab" onclick="switchTab('roster')">Vessel Roster</button>
+    </div>
+    <div class="panel-content">
+      <div id="tab-detail" class="slip-detail active">
+        <div id="no-selection" class="no-selection">
+          <div class="no-selection-icon">🔭</div>
+          <p>Select a slip on<br>the dock to view<br>or assign details</p>
+        </div>
+        <div id="slip-form" style="display:none">
+          <div class="detail-header">
+            <div class="detail-slip-num" id="form-slip-num">A1</div>
+            <div class="detail-dock" id="form-dock-label"></div>
+            <span class="detail-status-badge" id="form-status-badge">available</span>
+          </div>
+          <div class="field-group">
+            <div class="field-label">Status</div>
+            <select class="field-value" id="form-status" onchange="onStatusChange()">
+              <option value="available">Available</option>
+              <option value="occupied">Occupied</option>
+              <option value="reserved">Reserved</option>
+            </select>
+          </div>
+          <div id="vessel-fields">
+            <div class="field-group"><div class="field-label">Vessel Name</div><input class="field-value" type="text" id="form-vessel" placeholder="e.g. Sea Breeze II"></div>
+            <div class="field-group"><div class="field-label">Owner / Lessee</div><input class="field-value" type="text" id="form-owner" placeholder="Full name"></div>
+            <div class="field-group"><div class="field-label">Vessel Length (ft)</div><input class="field-value" type="number" id="form-length" placeholder="e.g. 28"></div>
+            <div class="field-group"><div class="field-label">Contact</div><input class="field-value" type="text" id="form-contact" placeholder="Phone or email"></div>
+            <div class="field-group"><div class="field-label">Notes</div><input class="field-value" type="text" id="form-notes" placeholder="Any special notes..."></div>
+          </div>
+          <button class="btn btn-primary" onclick="saveSlip()">⚓ Save Assignment</button>
+          <button class="btn btn-danger" onclick="clearSlip()">✕ Clear Slip</button>
+        </div>
+      </div>
+      <div id="tab-roster" class="roster-list" style="display:none">
+        <div class="field-group" style="margin-bottom:14px">
+          <input class="field-value" type="text" id="roster-search" placeholder="Search vessel or owner..." oninput="renderRoster()" style="width:100%">
+        </div>
+        <div id="roster-items"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- LAYOUT EDITOR MODAL -->
+<div class="modal-overlay" id="editor-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title">Layout Editor</div>
+        <div class="modal-subtitle">Changes sync to all users instantly</div>
+      </div>
+      <button class="modal-close" onclick="closeEditor()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="section-title">Visual Style</div>
+      <div class="layout-picker">
+        <div class="layout-option" data-layout="horizontal" onclick="pickLayout('horizontal')"><div class="layout-option-icon">☰</div><div class="layout-option-name">Horizontal</div></div>
+        <div class="layout-option" data-layout="vertical"   onclick="pickLayout('vertical')"><div class="layout-option-icon">☷</div><div class="layout-option-name">Vertical</div></div>
+        <div class="layout-option" data-layout="grid"       onclick="pickLayout('grid')"><div class="layout-option-icon">⊞</div><div class="layout-option-name">Grid</div></div>
+        <div class="layout-option" data-layout="finger"     onclick="pickLayout('finger')"><div class="layout-option-icon">𝄜</div><div class="layout-option-name">Finger Piers</div></div>
+      </div>
+      <div class="divider"></div>
+      <div class="section-title">Docks &amp; Slips</div>
+      <div id="dock-editor-rows"></div>
+      <button class="add-dock-btn" onclick="addDock()">+ Add Dock</button>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeEditor()" style="width:auto;padding:10px 24px;margin:0">Cancel</button>
+      <button class="btn btn-primary" onclick="applyLayout()" style="width:auto;padding:10px 24px;margin:0">⚓ Apply & Sync</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const STORAGE_KEY_STATE = 'marina_state';
+const POLL_INTERVAL = 5000; // re-sync every 5s
+
+// ── APP STATE ──
+let docks  = [];
+let slips  = {};
+let layout = 'horizontal';
+let selectedSlip = null;
+let currentTab   = 'detail';
+let pollTimer    = null;
+let lastSavedJSON = '';
+
+// ── DEFAULT DATA ──
+function defaultDocks() {
+  return [
+    { id:'A', name:'Dock A — North Pier', slips:10, size:'Standard' },
+    { id:'B', name:'Dock B — South Pier', slips:10, size:'Large' },
+    { id:'C', name:'Dock C — East Finger', slips:8,  size:'Small' },
+  ];
+}
+
+function defaultSlips(docksArr) {
+  const d = {};
+  docksArr.forEach(dock => {
+    for(let i=1; i<=dock.slips; i++) {
+      d[dock.id+i] = { dock:dock.id, num:i, status:'available', vessel:'', owner:'', length:'', contact:'', notes:'' };
+    }
+  });
+  // demo data
+  d['A3'] = {dock:'A',num:3,status:'occupied',vessel:'Sea Breeze II',owner:'James Harlow',length:'32',contact:'604-555-0192',notes:'Monthly lease'};
+  d['A7'] = {dock:'A',num:7,status:'reserved',vessel:"Moby's Revenge",owner:'Clara Voss',length:'28',contact:'cvoss@email.com',notes:'Arriving Sat'};
+  d['B2'] = {dock:'B',num:2,status:'occupied',vessel:'Northern Star',owner:'Robert Chen',length:'48',contact:'778-555-0341',notes:''};
+  d['B5'] = {dock:'B',num:5,status:'occupied',vessel:'Wanderlust III',owner:'Patricia Moore',length:'42',contact:'604-555-0887',notes:'Visiting vessel'};
+  d['C1'] = {dock:'C',num:1,status:'reserved',vessel:'Tiny Tides',owner:'Sam Oliver',length:'18',contact:'604-555-0223',notes:''};
+  return d;
+}
+
+// ── SYNC / STORAGE ──
+function setSyncStatus(state, label) {
+  const pill = document.getElementById('sync-pill');
+  const lbl  = document.getElementById('sync-label');
+  pill.className = `sync-pill ${state}`;
+  lbl.textContent = label;
+}
+
+async function loadFromStorage() {
+  try {
+    const result = await window.storage.get(STORAGE_KEY_STATE, true);
+    if(result && result.value) {
+      const parsed = JSON.parse(result.value);
+      return parsed;
+    }
+  } catch(e) { /* key not found or parse error */ }
+  return null;
+}
+
+async function saveToStorage(data) {
+  setSyncStatus('saving', 'Saving...');
+  try {
+    await window.storage.set(STORAGE_KEY_STATE, JSON.stringify(data), true);
+    lastSavedJSON = JSON.stringify(data);
+    setSyncStatus('live', 'Live · Synced');
+  } catch(e) {
+    setSyncStatus('error', 'Sync failed');
+    showToast('Sync error — changes may not be saved');
+  }
+}
+
+async function pollForUpdates() {
+  try {
+    const result = await window.storage.get(STORAGE_KEY_STATE, true);
+    if(result && result.value && result.value !== lastSavedJSON) {
+      const remote = JSON.parse(result.value);
+      lastSavedJSON = result.value;
+      applyRemoteState(remote);
+    }
+  } catch(e) {}
+}
+
+function applyRemoteState(state) {
+  docks  = state.docks  || docks;
+  slips  = state.slips  || slips;
+  layout = state.layout || layout;
+  renderGrid();
+  renderRoster();
+  // If selected slip still exists, refresh its display
+  if(selectedSlip && slips[selectedSlip]) {
+    selectSlip(selectedSlip);
+  }
+}
+
+// ── INIT ──
+async function init() {
+  let loaded = await loadFromStorage();
+  if(loaded) {
+    docks  = loaded.docks  || defaultDocks();
+    slips  = loaded.slips  || defaultSlips(docks);
+    layout = loaded.layout || 'horizontal';
+    lastSavedJSON = JSON.stringify(loaded);
+  } else {
+    docks  = defaultDocks();
+    slips  = defaultSlips(docks);
+    layout = 'horizontal';
+    // First time — save defaults to shared storage
+    await saveToStorage({ docks, slips, layout });
+  }
+
+  setSyncStatus('live', 'Live · Synced');
+  renderGrid();
+  renderRoster();
+
+  // Dismiss loading screen
+  const ls = document.getElementById('loading-screen');
+  ls.classList.add('fade-out');
+  setTimeout(() => ls.style.display='none', 500);
+
+  // Start polling for remote changes
+  pollTimer = setInterval(pollForUpdates, POLL_INTERVAL);
+}
+
+// ── GRID ──
+function renderGrid() {
+  const grid = document.getElementById('marina-grid');
+  grid.innerHTML = '';
+  docks.forEach((dock, di) => {
+    if(di > 0) { const c=document.createElement('div'); c.className='water-channel'; grid.appendChild(c); }
+    const sec = document.createElement('div'); sec.className='dock-section';
+    const lbl = document.createElement('div'); lbl.className='dock-label';
+    lbl.textContent = dock.name + (dock.size ? ' · '+dock.size : '');
+    sec.appendChild(lbl);
+    const ww = document.createElement('div');
+    ww.className = `dock-walkway layout-${layout}`;
+    if(layout==='grid') ww.style.setProperty('--gcols', Math.min(dock.slips, 8));
+    for(let i=1; i<=dock.slips; i++) {
+      const id = dock.id+i;
+      if(!slips[id]) slips[id]={dock:dock.id,num:i,status:'available',vessel:'',owner:'',length:'',contact:'',notes:''};
+      ww.appendChild(buildSlipEl(id, dock));
+    }
+    sec.appendChild(ww);
+    grid.appendChild(sec);
+  });
+  updateStats();
+}
+
+function buildSlipEl(id, dock) {
+  const s = slips[id];
+  const el = document.createElement('div');
+  el.className = `slip ${s.status}${selectedSlip===id?' selected':''}`;
+  const icon = s.status==='occupied'?'⛵':s.status==='reserved'?'🔒':'';
+  el.innerHTML = `<span class="slip-num">${id}</span><span class="slip-size">${dock.size||''}</span>${icon?`<span class="slip-icon">${icon}</span>`:''}${s.vessel?`<span class="slip-name">${s.vessel}</span>`:''}`;
+  el.addEventListener('click', ()=>selectSlip(id));
+  return el;
+}
+
+function activeIds() {
+  const s=new Set(); docks.forEach(d=>{for(let i=1;i<=d.slips;i++) s.add(d.id+i);}); return s;
+}
+
+function updateStats() {
+  const ids=[...activeIds()];
+  document.getElementById('stat-total').textContent     = ids.length;
+  document.getElementById('stat-available').textContent = ids.filter(id=>slips[id]?.status==='available').length;
+  document.getElementById('stat-occupied').textContent  = ids.filter(id=>slips[id]?.status==='occupied').length;
+}
+
+// ── SLIP SELECT ──
+function selectSlip(id) {
+  selectedSlip = id;
+  const s = slips[id]; if(!s) return;
+  const dock = docks.find(d=>d.id===s.dock);
+  document.getElementById('no-selection').style.display='none';
+  document.getElementById('slip-form').style.display='block';
+  document.getElementById('form-slip-num').textContent = id;
+  document.getElementById('form-dock-label').textContent = dock?dock.name:'';
+  const badge=document.getElementById('form-status-badge');
+  badge.textContent=s.status; badge.className=`detail-status-badge ${s.status}`;
+  document.getElementById('form-status').value  = s.status;
+  document.getElementById('form-vessel').value  = s.vessel||'';
+  document.getElementById('form-owner').value   = s.owner||'';
+  document.getElementById('form-length').value  = s.length||'';
+  document.getElementById('form-contact').value = s.contact||'';
+  document.getElementById('form-notes').value   = s.notes||'';
+  toggleVesselFields(s.status);
+  if(currentTab!=='detail') switchTab('detail');
+  renderGrid();
+}
+
+function onStatusChange() { toggleVesselFields(document.getElementById('form-status').value); }
+function toggleVesselFields(st) { document.getElementById('vessel-fields').style.display=st==='available'?'none':'block'; }
+
+async function saveSlip() {
+  if(!selectedSlip) return;
+  const st=document.getElementById('form-status').value;
+  slips[selectedSlip]={...slips[selectedSlip],status:st,
+    vessel:document.getElementById('form-vessel').value,
+    owner:document.getElementById('form-owner').value,
+    length:document.getElementById('form-length').value,
+    contact:document.getElementById('form-contact').value,
+    notes:document.getElementById('form-notes').value};
+  await saveToStorage({docks,slips,layout});
+  renderGrid(); renderRoster(); showToast('Slip '+selectedSlip+' updated');
+  const b=document.getElementById('form-status-badge'); b.textContent=st; b.className=`detail-status-badge ${st}`;
+}
+
+async function clearSlip() {
+  if(!selectedSlip) return;
+  slips[selectedSlip]={...slips[selectedSlip],status:'available',vessel:'',owner:'',length:'',contact:'',notes:''};
+  await saveToStorage({docks,slips,layout});
+  renderGrid(); renderRoster(); selectSlip(selectedSlip); showToast('Slip '+selectedSlip+' cleared');
+}
+
+// ── ROSTER ──
+function renderRoster() {
+  const q=(document.getElementById('roster-search')?.value||'').toLowerCase();
+  const c=document.getElementById('roster-items'); if(!c) return;
+  c.innerHTML='';
+  const ids=activeIds();
+  const rows=Object.entries(slips)
+    .filter(([id,s])=>ids.has(id)&&s.status!=='available'&&s.vessel)
+    .filter(([id,s])=>!q||s.vessel.toLowerCase().includes(q)||(s.owner||'').toLowerCase().includes(q)||id.toLowerCase().includes(q))
+    .sort((a,b)=>a[0].localeCompare(b[0]));
+  if(!rows.length){c.innerHTML='<div style="color:var(--muted);font-size:11px;text-align:center;padding:20px;letter-spacing:2px">No vessels found</div>';return;}
+  rows.forEach(([id,s])=>{
+    const el=document.createElement('div'); el.className='roster-item';
+    el.innerHTML=`<div class="roster-slip-badge">${id}</div><div class="roster-info"><div class="roster-vessel">${s.vessel}</div><div class="roster-owner">${s.owner||'No owner listed'}</div></div><div class="roster-status-dot ${s.status}"></div>`;
+    el.addEventListener('click',()=>selectSlip(id)); c.appendChild(el);
+  });
+}
+
+// ── TABS ──
+function switchTab(tab) {
+  currentTab=tab;
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',(i===0&&tab==='detail')||(i===1&&tab==='roster')));
+  document.getElementById('tab-detail').style.display=tab==='detail'?'block':'none';
+  document.getElementById('tab-detail').classList.toggle('active',tab==='detail');
+  document.getElementById('tab-roster').style.display=tab==='roster'?'block':'none';
+  document.getElementById('tab-roster').classList.toggle('active',tab==='roster');
+  if(tab==='roster') renderRoster();
+}
+
+// ── EDITOR ──
+let eDocks=[]; let eLayout='horizontal'; let dragIdx=null;
+
+function openEditor() {
+  eDocks=docks.map(d=>({...d})); eLayout=layout;
+  renderEditorRows(); highlightLayout();
+  document.getElementById('editor-modal').classList.add('open');
+}
+function closeEditor(){document.getElementById('editor-modal').classList.remove('open');}
+function pickLayout(l){eLayout=l;highlightLayout();}
+function highlightLayout(){document.querySelectorAll('.layout-option').forEach(el=>el.classList.toggle('selected',el.dataset.layout===eLayout));}
+
+function renderEditorRows() {
+  const list=document.getElementById('dock-editor-rows'); list.innerHTML='';
+  eDocks.forEach((dock,i)=>{
+    const row=document.createElement('div'); row.className='dock-row'; row.draggable=true; row.dataset.idx=i;
+    row.innerHTML=`
+      <div class="drag-handle" title="Drag to reorder">⠿</div>
+      <div class="field-group"><div class="field-label">Dock Name</div><input class="field-value" type="text" value="${esc(dock.name)}" data-field="name" data-idx="${i}" placeholder="e.g. Dock A — North Pier"></div>
+      <div class="field-group"><div class="field-label">Slips</div><input class="field-value" type="number" min="1" max="60" value="${dock.slips}" data-field="slips" data-idx="${i}" style="text-align:center"></div>
+      <div class="field-group"><div class="field-label">Size / Category</div><input class="field-value" type="text" value="${esc(dock.size||'')}" data-field="size" data-idx="${i}" placeholder="Standard, Large..."></div>
+      <button class="remove-dock" data-idx="${i}" title="Remove">✕</button>`;
+    row.querySelectorAll('input[data-field]').forEach(inp=>{
+      inp.addEventListener('input',e=>{
+        const idx=parseInt(e.target.dataset.idx),f=e.target.dataset.field;
+        eDocks[idx][f]=f==='slips'?(parseInt(e.target.value)||1):e.target.value;
+      });
+    });
+    row.querySelector('.remove-dock').addEventListener('click',()=>{
+      if(eDocks.length<=1){showToast('Need at least one dock');return;}
+      eDocks.splice(i,1); renderEditorRows();
+    });
+    row.addEventListener('dragstart',()=>{dragIdx=i;setTimeout(()=>row.style.opacity='.4',0);});
+    row.addEventListener('dragend',()=>{row.style.opacity='1';document.querySelectorAll('.dock-row').forEach(r=>r.classList.remove('drag-over'));});
+    row.addEventListener('dragover',e=>{e.preventDefault();row.classList.add('drag-over');});
+    row.addEventListener('dragleave',()=>row.classList.remove('drag-over'));
+    row.addEventListener('drop',e=>{
+      e.preventDefault();
+      if(dragIdx===null||dragIdx===i)return;
+      const m=eDocks.splice(dragIdx,1)[0]; eDocks.splice(i,0,m); dragIdx=null; renderEditorRows();
+    });
+    list.appendChild(row);
+  });
+}
+
+function addDock(){
+  const used=new Set(eDocks.map(d=>d.id)); let id='';
+  for(const l of LETTERS){if(!used.has(l)){id=l;break;}}
+  if(!id) id='X'+eDocks.length;
+  eDocks.push({id,name:`Dock ${id}`,slips:8,size:'Standard'}); renderEditorRows();
+  document.querySelector('.modal-body').scrollTop=9999;
+}
+
+async function applyLayout(){
+  for(const d of eDocks){
+    if(!d.name.trim()){showToast('All docks need a name');return;}
+    if(!d.slips||d.slips<1){showToast('Slips must be ≥ 1');return;}
+  }
+  eDocks.forEach((d,i)=>{d.id=LETTERS[i]||('X'+i);});
+  const newSlips={};
+  eDocks.forEach(dock=>{
+    for(let i=1;i<=dock.slips;i++){
+      const id=dock.id+i;
+      newSlips[id]=slips[id]?{...slips[id],dock:dock.id,num:i}:{dock:dock.id,num:i,status:'available',vessel:'',owner:'',length:'',contact:'',notes:''};
+    }
+  });
+  docks=eDocks.map(d=>({...d})); slips=newSlips; layout=eLayout;
+  selectedSlip=null;
+  document.getElementById('no-selection').style.display='block';
+  document.getElementById('slip-form').style.display='none';
+  await saveToStorage({docks,slips,layout});
+  renderGrid(); renderRoster(); closeEditor(); showToast('Layout synced to all users!');
+}
+
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');}
+
+function showToast(msg){
+  const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),2800);
+}
+
+// ── START ──
+init();
+</script>
+</body>
+</html>
